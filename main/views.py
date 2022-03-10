@@ -1,16 +1,17 @@
-from unicodedata import category
 from django.http import JsonResponse,HttpResponse
 from django.db.models import Max,Min,Count,Avg
 from django.shortcuts import render,redirect
 from .models import *
 from django.template.loader import render_to_string
-from .forms import SignupForm
+from .forms import ReviewAdd, SignupForm
 from django.contrib.auth import authenticate,login
 from django.contrib.auth.decorators import login_required
+#paypal
 from django.conf import settings
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from paypal.standard.forms import PayPalPaymentsForm
+
 
 # home page
 def home(request):
@@ -58,11 +59,34 @@ def brand_product_list(request,brand_id):
 # product detail
 def product_detail(request,slug,id):
     product=Product.objects.get(id=id)
+
+    # related products
     related_products=Product.objects.filter(category=product.category).exclude(id=id)[:4]
+
+
     colors=ProductAttribute.objects.filter(product=product).values('color__id','color__title','color__color_code').distinct()
     sizes=ProductAttribute.objects.filter(product=product).values('size__id','size__title','price','color__id').distinct()
+
+    # review
+    reviewForm=ReviewAdd()
+
+	# Check
+    canAdd=True
+    reviewCheck=ProductReview.objects.filter(user=request.user,product=product).count()
+    if request.user.is_authenticated:
+        if reviewCheck > 0:
+            canAdd=False
+    #end
     
-    return render(request,'product_detail.html',{'data':product,'related':related_products,'colors':colors,'sizes':sizes})
+    #fetch reviews
+    reviews=ProductReview.objects.filter(product=product)
+    #end
+
+	# Fetch avg rating for reviews
+    avg_reviews=ProductReview.objects.filter(product=product).aggregate(avg_rating=Avg('review_rating'))
+	# End
+
+    return render(request, 'product_detail.html',{'data':product,'related':related_products,'colors':colors,'sizes':sizes,'reviewForm':reviewForm,'canAdd':canAdd,'reviews':reviews,'avg_reviews':avg_reviews})
 
 # search
 def search(request):
@@ -130,9 +154,11 @@ def add_to_cart(request):
 # cart list page
 def cart_list(request):
     total_amt=0
-    for p_id,item in request.session['cartdata'].items():
-        total_amt+=int(item['qty'])*float(item['price'])
-    return render(request,'cart.html',{'cart_data' : request.session['cartdata'],'totalitems':len(request.session['cartdata']),'total_amt':total_amt})
+    if 'cartdata' in request.session:
+        for p_id,item in request.session['cartdata'].items():
+            total_amt+=int(item['qty'])*float(item['price'])
+        return render(request,'cart.html',{'cart_data' : request.session['cartdata'],'totalitems':len(request.session['cartdata']),'total_amt':total_amt})
+    return render(request,'cart.html')
 
 # update cart item
 def update_cart_item(request):
@@ -228,3 +254,25 @@ def payment_done(request):
 @csrf_exempt
 def payment_canceled(request):
 	return render(request, 'payment-fail.html')
+
+# Save Review
+def save_review(request,pid):
+	product=Product.objects.get(pk=pid)
+	user=request.user
+	review=ProductReview.objects.create(
+		user=user,
+		product=product,
+		review_text=request.POST['review_text'],
+		review_rating=request.POST['review_rating'],
+		)
+	data={
+		'user':user.username,
+		'review_text':request.POST['review_text'],
+		'review_rating':request.POST['review_rating']
+	}
+
+	# Fetch avg rating for reviews
+	avg_reviews=ProductReview.objects.filter(product=product).aggregate(avg_rating=Avg('review_rating'))
+	# End
+
+	return JsonResponse({'bool':True,'data':data,'avg_reviews':avg_reviews})
